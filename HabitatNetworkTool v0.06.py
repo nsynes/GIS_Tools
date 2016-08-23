@@ -1,5 +1,5 @@
 # Nick Synes
-# 25 May 2016
+# 22 Aug 2016
 #
 # Habitat network tool for Forest Research
 # A number of parameters are currently greyed out.
