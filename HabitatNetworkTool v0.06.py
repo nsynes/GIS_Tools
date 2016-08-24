@@ -15,7 +15,7 @@
 
 
 import Tkinter, Tkconstants, tkFileDialog, tkMessageBox
-import os, numpy, tempfile, inspect
+import os, numpy, tempfile
 import arcpy
 
 arcpy.env.overwriteOutput = True
@@ -249,7 +249,16 @@ def RunLCN(VecOrRast, HabFname, LandFname, Field, MinHabArea, MaxCost, Nhood, Ce
         arcpy.RasterToPolygon_conversion(fnRegionGroup, fnVecRegionGroup, "NO_SIMPLIFY", "VALUE") # DEBUG tmp.shp (GRIDCODE field)
         fnVecRegionGroupByGridCode = tmp("shp")
         arcpy.Dissolve_management(fnVecRegionGroup, fnVecRegionGroupByGridCode, "GRIDCODE") # DEBUG tmp0.shp
-        arcpy.AddGeometryAttributes_management(fnVecRegionGroupByGridCode, "AREA")
+        # Does not work in ArcGIS 10.0
+        #arcpy.AddGeometryAttributes_management(fnVecRegionGroupByGridCode, "AREA")
+        # So do it manually below:
+        arcpy.AddField_management(fnVecRegionGroupByGridCode, "POLY_AREA", "DOUBLE")
+        geometryField = arcpy.Describe(fnVecRegionGroupByGridCode).shapeFieldName
+        cursor = arcpy.UpdateCursor(fnVecRegionGroupByGridCode)
+        for row in cursor:
+            row.setValue("POLY_AREA", row.getValue(geometryField).area)
+            cursor.updateRow(row)
+        del row, cursor
         fnVecSelectedHab = tmp("shp")
         arcpy.Select_analysis(fnVecRegionGroupByGridCode, fnVecSelectedHab, '"POLY_AREA" >= %s' %MinHabArea) # DEBUG tmp1.shp
         fnSelectedHab = tmp("tif")
@@ -271,28 +280,42 @@ def RunLCN(VecOrRast, HabFname, LandFname, Field, MinHabArea, MaxCost, Nhood, Ce
     fnWithinCost = tmp("tif")
     arcpy.gp.Reclassify_sa(fnCostDist, "VALUE", "0 " + str(MaxCost) + " 0", fnWithinCost) # DEBUG tmp5.tif
     
-    # Region group to identify contiguous areas
+    # Region group networks to identify contiguous areas
     Networks = arcpy.sa.RegionGroup(fnWithinCost, dicNeighbours[Nhood]) # DEBUG tmp6.tif
     fnNetworks = tmp("tif")
     Networks.save(fnNetworks)
     
-    # Add to original habitat raster to relabel habitat patches that are in the same network
+    # Convert original habitat raster to all zeros and add to network raster
+    # to relabel habitat patches that are in the same network, and to remove habitat patches
+    # that are outside of the network (i.e. those less than the minimum patch size)
     OrigHabRasterZero = arcpy.sa.Con(arcpy.sa.Raster(fnGivenHab) >= 0, 0, fnGivenHab) # DEBUG tmp7.tif
     fnOrigHabRasterZero = tmp("tif")
     OrigHabRasterZero.save(fnOrigHabRasterZero)
-    HabNetworks = arcpy.sa.Plus(fnNetworks, fnOrigHabRasterZero)
+    HabNetworks = arcpy.sa.Plus(fnNetworks, fnOrigHabRasterZero) # DEBUG tmp8.tif
     fnHabNetworks = tmp("tif")
     HabNetworks.save(fnHabNetworks)
 
-    # Convert to shapefile to allow for dissolve function below
-    fnVecHabNetworks = tmp("shp")
-    arcpy.RasterToPolygon_conversion(fnHabNetworks, fnVecHabNetworks, "NO_SIMPLIFY", "VALUE")
-    
-    # Use dissolve to group polygons (habitat patches) by the network they are within,
-    # outputting the home habitat vector (shape) file
-    # HABITAT SHAPEFILE FINAL OUTPUT
-    arcpy.Dissolve_management(fnVecHabNetworks, fnHabOut, "GRIDCODE")
+    # The output hab file
+    fnHabPoly = tmp("shp")
+    arcpy.RasterToPolygon_conversion(fnHabNetworks, fnHabPoly, "NO_SIMPLIFY", "VALUE")
+    arcpy.Dissolve_management(fnHabPoly, fnHabOut, "GRIDCODE")
 
+    # Region group the habitat patches...
+    HabRegions = arcpy.sa.RegionGroup(fnHabNetworks, dicNeighbours[Nhood]) # DEBUG tmp9.tif
+    fnHabRegions = tmp("tif")
+    HabRegions.save(fnHabRegions)
+
+    # Prepare shapefiles to allow habitat patches to be counted within each network
+    if Nhood == 4:
+        fnHabForPartCount = tmp("shp")
+        arcpy.RasterToPolygon_conversion(fnHabRegions, fnHabForPartCount, "NO_SIMPLIFY", "VALUE") # DEBUG tmp2.shp
+    else:
+        fnHabPoly = tmp("shp")
+        arcpy.RasterToPolygon_conversion(fnHabRegions, fnHabPoly, "NO_SIMPLIFY", "VALUE")
+        fnHabForPartCount = tmp("shp")
+        arcpy.Dissolve_management(fnHabPoly, fnHabForPartCount, "GRIDCODE")
+        fnHabDissolve = tmp("shp")
+    
     # Output networks as vector (shape) file
     fnNetSeparate = tmp("shp")
     arcpy.RasterToPolygon_conversion(fnNetworks, fnNetSeparate, "NO_SIMPLIFY", "VALUE")
@@ -303,7 +326,7 @@ def RunLCN(VecOrRast, HabFname, LandFname, Field, MinHabArea, MaxCost, Nhood, Ce
     # so remove these when the neighbourhood has been set as 4
     # NETWORK SHAPEFILE FINAL OUTPUT
     if Nhood == 4:
-        arcpy.MakeFeatureLayer_management(fnNetDissolve, "NetLyr") 
+        arcpy.MakeFeatureLayer_management(fnNetDissolve, "NetLyr")
         arcpy.SelectLayerByLocation_management("NetLyr", "contains", fnHabOut)
         arcpy.Select_analysis("NetLyr", fnNetOut)
         arcpy.Delete_management("NetLyr")
@@ -314,9 +337,35 @@ def RunLCN(VecOrRast, HabFname, LandFname, Field, MinHabArea, MaxCost, Nhood, Ce
     # If user wanted a csv of the habitat and network areas, then calculate and output this
     if intCsv:
         # Calculate polygon areas for networks and habitats
-        arcpy.AddGeometryAttributes_management(fnNetOut, "AREA")
-        arcpy.AddGeometryAttributes_management(fnHabOut, "AREA")
-        arcpy.AddGeometryAttributes_management(fnHabOut, "PART_COUNT")
+        # Should work for ArcGIS 10.0+
+        # area
+        for FinalShapeFile in (fnNetOut, fnHabOut):
+            arcpy.AddField_management(FinalShapeFile, "POLY_AREA", "DOUBLE")
+            geometryField = arcpy.Describe(FinalShapeFile).shapeFieldName
+            cursor = arcpy.UpdateCursor(FinalShapeFile)
+            for row in cursor:
+                row.setValue("POLY_AREA", row.getValue(geometryField).area)
+                cursor.updateRow(row)
+            del row, cursor
+            
+        # count patches
+        arcpy.MakeFeatureLayer_management(fnNetOut, "NetworkLyr")
+        arcpy.MakeFeatureLayer_management(fnHabForPartCount, "HabitatLyr")
+        cursor = arcpy.SearchCursor(fnNetOut)
+        dicPartCount = {}
+        for row in cursor:
+            FID = row.getValue("FID")
+            arcpy.SelectLayerByAttribute_management("NetworkLyr", "NEW_SELECTION", "\"FID\" = %s" %FID)
+            arcpy.SelectLayerByLocation_management("HabitatLyr", "WITHIN", "NetworkLyr", selection_type="NEW_SELECTION")
+            dicPartCount[FID] = int(arcpy.GetCount_management("HabitatLyr").getOutput(0))
+        del row, cursor
+
+        arcpy.AddField_management(fnHabOut, "PART_COUNT", "LONG")
+        cursor = arcpy.UpdateCursor(fnHabOut)
+        for row in cursor:
+            row.setValue("PART_COUNT", dicPartCount[row.getValue("FID")])
+            cursor.updateRow(row)
+        del row, cursor
     
         # Create a path and filename for the csv file based on the other output files
         # Note: could add extra filename parameter for this...
@@ -330,9 +379,11 @@ def RunLCN(VecOrRast, HabFname, LandFname, Field, MinHabArea, MaxCost, Nhood, Ce
         cursor = arcpy.SearchCursor(fnNetOut)
         for row in cursor:
             dicNet[row.getValue("FID")] = row.getValue("POLY_AREA")
+        del row, cursor
         cursor = arcpy.SearchCursor(fnHabOut)
         for row in cursor:
             dicHab[row.getValue("FID")] = [row.getValue("PART_COUNT"), row.getValue("POLY_AREA")]
+        del row, cursor
 
         # Get the linear units of the shapefiles being used
         strHabUnit = arcpy.Describe(fnHabOut).spatialReference.linearUnitName
