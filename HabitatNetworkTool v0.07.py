@@ -100,12 +100,19 @@ class BeetleGUI(Tkinter.Tk):
         self.LandFieldOpt = Tkinter.OptionMenu(self, self.dEntryValue[key],"")
         self.LandFieldOpt.grid(column=1,row=dLabOrder[key],padx=5,pady=5,sticky=Tkinter.W)
 
+        vcmd = (self.register(self.onValidate),'%P')
+
         # Create fields for input files
-        for key in ["HabFile","LandFile"]:
-            self.dEntryValue[key] = Tkinter.StringVar()
-            self.dEntryField[key] = Tkinter.Entry(self,textvariable=self.dEntryValue[key],width=60)
-            self.dEntryField[key].grid(column=1,row=dLabOrder[key],padx=5,pady=5,sticky=Tkinter.W)
-            Tkinter.Button(self,text="...", command=lambda key=key:  self.OnFileButtonClick(key)).grid(column=2,row=dLabOrder[key],padx=5,pady=5,sticky=Tkinter.W)
+        key = "HabFile"
+        self.dEntryValue[key] = Tkinter.StringVar()
+        self.dEntryField[key] = Tkinter.Entry(self, textvariable=self.dEntryValue[key],width=60)
+        self.dEntryField[key].grid(column=1,row=dLabOrder[key],padx=5,pady=5,sticky=Tkinter.W)
+        Tkinter.Button(self,text="...", command=lambda key=key:  self.OnFileButtonClick(key)).grid(column=2,row=dLabOrder[key],padx=5,pady=5,sticky=Tkinter.W)
+        key = "LandFile"
+        self.dEntryValue[key] = Tkinter.StringVar()
+        self.dEntryField[key] = Tkinter.Entry(self, validate='focusout', validatecommand=vcmd, textvariable=self.dEntryValue[key],width=60)
+        self.dEntryField[key].grid(column=1,row=dLabOrder[key],padx=5,pady=5,sticky=Tkinter.W)
+        Tkinter.Button(self,text="...", command=lambda key=key:  self.OnFileButtonClick(key)).grid(column=2,row=dLabOrder[key],padx=5,pady=5,sticky=Tkinter.W)
 
         # Create fields for "save as" files
         for key in ["HabOutFname","NetOutFname"]:
@@ -130,9 +137,6 @@ class BeetleGUI(Tkinter.Tk):
         # Set a trace on the VectorRaster option menu to disable fields when not required
         self.dEntryValue["VectorRaster"].trace('w', self.ChangeVectorRaster)
 
-        # Set a trace of the landcover field option menu
-        self.dEntryValue["LandFile"].trace('w', self.UpdateLandField)
-    
         # Final button to run the tool
         Tkinter.Button(self,text="Run", command=self.OnOkButtonClick).grid(column=1,row=len(lLabs)+1,padx=5,pady=5)
 
@@ -152,6 +156,23 @@ class BeetleGUI(Tkinter.Tk):
         options["defaultextension"] = ".shp"
         options["filetypes"] = [("Shape files", ".shp")]
         options["initialdir"] = r"C:\\"
+
+    def onValidate(self, P):
+        """Updates the option menu of landcover vector fields"""
+        if self.dEntryValue["VectorRaster"].get() == "Vector":
+            if os.path.exists(P) and P[-4:].lower() == ".shp":
+                self.dFileName["LandFile"] = P
+                fields = arcpy.Describe(self.dFileName["LandFile"]).fields
+                menu = self.LandFieldOpt['menu']
+                menu.delete(0, 'end')
+                # Add each identified shapefile field to the landfile field option menu
+                for field in fields:
+                    menu.add_command(label=field.name, command=lambda value=field.name: self.dEntryValue["LandField"].set(value))
+            else:
+                menu = self.LandFieldOpt['menu']
+                menu.delete(0, 'end')
+                menu.add_command(label="", command=self.dEntryValue["LandField"].set(""))
+        return True
 
     def OnFileButtonClick(self, key):
         """Open a filename selection dialogue, with file options dependent on whether vector or
@@ -192,15 +213,6 @@ class BeetleGUI(Tkinter.Tk):
         OutCsvFile = self.dEntryValue["OutAreaCsv"].get()
         RunLCN(VectorRaster, HabFile, LandFile, LandField, MinHabArea, MaxDist, Neighbourhood, CellSize, HabOutFile, NetOutFile, OutCsvFile)
 
-    def UpdateLandField(self, *args):
-        """Called from a trace on the land file entry box. Updates the option menu of landcover vector fields"""
-        if self.dEntryValue["VectorRaster"].get() == "Vector":
-            fields = arcpy.Describe(self.dFileName["LandFile"]).fields
-            menu = self.LandFieldOpt['menu']
-            menu.delete(0, 'end')
-            # Add each identified shapefile field to the landfile field option menu
-            for field in fields:
-                menu.add_command(label=field.name, command=lambda value=field.name: self.dEntryValue["LandField"].set(value))
 
     def ChangeVectorRaster(self, *args):
         """Called from a trace on VectorRaster option menu. Hides Landcover field and cellsize parameter if "raster" option chosen."""
